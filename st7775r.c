@@ -19,8 +19,10 @@
 #include <linux/clk.h>
 #include <mach/camera.h>
 #include <soc/gpio.h>
+#include "st7775r.h"
 
 static struct spi_device	*spi;
+static unsigned long		buffer_size=220*176*2;
 static unsigned char		*buffer;
 
 
@@ -37,8 +39,6 @@ static struct class *st7775r_class;
 struct st7775r_board_info st7775r_board = {
     .reset_gpio = GPIO_PB(17),
     .rs_gpio = GPIO_PB(18),
-//    .reset_gpio = GPIO_PA(4),
-//    .rs_gpio = GPIO_PA(2),
 
 };
 
@@ -54,7 +54,6 @@ static int write_command(unsigned char value_l,unsigned char value_h)
         {
             .tx_buf = &data,
             .len = 2,
-//          .cs_change = 1,
         }
     };
 
@@ -63,6 +62,7 @@ static int write_command(unsigned char value_l,unsigned char value_h)
 	spi_message_init(&msg);
 	spi_message_add_tail(&t[0], &msg);
 	ret = spi_sync(spi, &msg);    
+    RS(1);
     if (ret < 0)
     {
        return -1;
@@ -79,11 +79,9 @@ static int write_data(unsigned char value_l,unsigned char value_h)
         {
             .tx_buf = &data,
             .len = 2,
-    //          .cs_change = 1,
+            .delay_usecs = 1,
         }
     };
-
-    RS(1);
     data = value_l|(value_h<<8);
 	spi_message_init(&msg);
 	spi_message_add_tail(&t[0], &msg);
@@ -93,12 +91,6 @@ static int write_data(unsigned char value_l,unsigned char value_h)
        return -1;
     }
     return 0;
-}
-
-static int st7775r_write_data(unsigned char *data,int len)
-{
-    RS(1);
-    return 0;    
 }
 
 static void inti_st7775r(void)
@@ -228,20 +220,61 @@ static void inti_st7775r(void)
 static int st7775r_open(struct inode *inode,struct file *file)
 {
     printk("st7775r_open\n");
+
+    buffer = kmalloc(buffer_size, GFP_KERNEL);
+    if(buffer==NULL)
+        printk("kmalloc error\n");
     return 0;    
 }
 static int st7775r_read(struct file *file, char __user *user_buf, size_t size, loff_t *ppos)
 {
-    unsigned char data[3]="100";
-    printk("st7775r_read\n");
-    copy_to_user(user_buf,&data,size);
+    return 0;
+}
+static int spi_write_array_data(const char *buf,size_t count)
+{
+    int ret;
+    struct spi_message msg;    
+    struct spi_transfer t[]={
+       {
+           .tx_buf = buf,
+           .len    = count,
+           .delay_usecs= 1,
+        },
+    };
+        
+	spi_message_init(&msg);
+	spi_message_add_tail(&t[0], &msg);
+	ret = spi_sync(spi, &msg);    
+    if (ret < 0)
+    {
+       return -1;
+    }   
     return 0;
 }
 static int st7775r_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
-{
-
-
-//    copy_from_user(buffer,buf,count);
+{  
+    int ret,tmp; 
+    unsigned char		*p;
+    tmp=count;
+    if(tmp>buffer_size){
+        printk("buffer size too big\n");
+        tmp=buffer_size;
+    }
+    ret=copy_from_user(buffer,buf,tmp);
+    if(ret != 0)
+        return -ENOMEM;
+    p=buffer;
+    while(tmp>0){
+        if(tmp>4096){
+            spi_write_array_data(p,4096);
+            p=p+4096;
+            tmp=tmp-4096;
+        }
+        else{
+            spi_write_array_data(p,tmp);
+            break;
+        }
+    }
     return 0;
 }
 
@@ -249,14 +282,17 @@ static long st7775r_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 {
     switch(cmd)
     {
-        case 1:
-            printk("1 args's %ld\n",arg);
-            break;
-        case 2:            
-            printk("2 args's %ld\n",arg);
+        case ST7775R_IOC_WR_BUFFER_SIZE:
+            kfree(buffer);
+            buffer_size=*(unsigned long*)arg;
+            buffer = kmalloc(buffer_size, GFP_KERNEL);
+    		if (!buffer) {
+	    		return -ENOMEM;
+		    }
+            printk("1 args's %ld\n",*(unsigned long*)arg);
             break;
         default:
-            printk("cmd:%x,arg=%ld",cmd,arg);        
+            printk("cmd:%x,arg=%ld",cmd,*(unsigned long*)arg);        
     }
     
     return 0;
@@ -278,8 +314,8 @@ static int st7775r_spidev_probe(struct spi_device *spi_dev)
 	/* Initialize the driver data */
     printk("st7775r_spidev_probe\n");
 	spi = spi_dev;
-    inti_st7775r();    
-	return 0;
+    inti_st7775r(); 
+    return 0;
 }
 
 static int st7775r_spidev_remove(struct spi_device *spi)
@@ -339,7 +375,7 @@ static void __exit st7775r_exit(void)
     
     gpio_free(st7775r_board.rs_gpio);
     gpio_free(st7775r_board.reset_gpio);
-    
+    kfree(buffer);
   	spi_unregister_driver(&spidev_spi_driver);
 #if 1    
     cdev_del(st7775r_cdev);
