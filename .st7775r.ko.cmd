@@ -1,0 +1,1 @@
+cmd_/home/t15/test/driver/st7775r/st7775r.ko := mips-linux-gnu-ld -r  -m elf32ltsmip -T /home/t15/Ingenic-SDK-3.2.2-20160229/opensource/kernel_recorder/scripts/module-common.lds --build-id  -o /home/t15/test/driver/st7775r/st7775r.ko /home/t15/test/driver/st7775r/st7775r.o /home/t15/test/driver/st7775r/st7775r.mod.o

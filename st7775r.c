@@ -19,6 +19,7 @@
 #include <linux/clk.h>
 #include <mach/camera.h>
 #include <soc/gpio.h>
+
 #include "st7775r.h"
 
 static struct spi_device	*spi;
@@ -30,6 +31,7 @@ struct st7775r_board_info
 {
     int reset_gpio;
     int rs_gpio;
+    int backlight_gpio;
 };
 
 #define SPIDEV_MAJOR			153	/* assigned */
@@ -39,11 +41,12 @@ static struct class *st7775r_class;
 struct st7775r_board_info st7775r_board = {
     .reset_gpio = GPIO_PB(17),
     .rs_gpio = GPIO_PB(18),
-
+    .backlight_gpio = GPIO_PC(9),
 };
 
 #define RESET(a) do{gpio_direction_output(st7775r_board.reset_gpio, a);}while(0)
 #define RS(a) do{gpio_direction_output(st7775r_board.rs_gpio, a);}while(0)
+#define BACKLIGHT(a) do{gpio_direction_output(st7775r_board.backlight_gpio, a);}while(0)
 
 static int write_command(unsigned char value_l,unsigned char value_h)
 {
@@ -54,6 +57,7 @@ static int write_command(unsigned char value_l,unsigned char value_h)
         {
             .tx_buf = &data,
             .len = 2,
+            .delay_usecs = 0,
         }
     };
 
@@ -79,7 +83,7 @@ static int write_data(unsigned char value_l,unsigned char value_h)
         {
             .tx_buf = &data,
             .len = 2,
-            .delay_usecs = 1,
+            .delay_usecs = 0,
         }
     };
     data = value_l|(value_h<<8);
@@ -216,14 +220,37 @@ static void inti_st7775r(void)
     
 }
 
+static void LCD_Enter_Standby(void)                               
+{                                                          
+    write_command(0x00,0xFF);                              
+    write_data(0x00,0x00);                                 
+                                                           
+    write_command(0x00,0x07);                              
+    write_data(0x00,0x00);                                 
+    mdelay(50);                                             
+    write_command(0x00,0x10);// Enter Standby mode         
+    write_data(0x00,0x03);                                 
+    mdelay(200);                                            
+                                                           
+}                                                          
+static void LCD_Exit_Standby(void)                               
+{                                                          
+                                                           
+    mdelay(200);                                            
+    write_command(0x00,0xFF);                              
+    write_data(0x00,0x00);                                 
+                                                           
+    write_command(0x00,0x10);// Exit Sleep/ Standby mode   
+    write_data(0x00,0x00);                                 
+    mdelay(50);                                             
+    write_command(0x00,0x07);                              
+    write_data(0x01,0x17);                                 
+    mdelay(200);                                           
+}                                                          
 
 static int st7775r_open(struct inode *inode,struct file *file)
 {
     printk("st7775r_open\n");
-
-    buffer = kmalloc(buffer_size, GFP_KERNEL);
-    if(buffer==NULL)
-        printk("kmalloc error\n");
     return 0;    
 }
 static int st7775r_read(struct file *file, char __user *user_buf, size_t size, loff_t *ppos)
@@ -238,7 +265,7 @@ static int spi_write_array_data(const char *buf,size_t count)
        {
            .tx_buf = buf,
            .len    = count,
-           .delay_usecs= 1,
+           .delay_usecs= 0,
         },
     };
         
@@ -264,22 +291,13 @@ static int st7775r_write(struct file *file, const char __user *buf, size_t count
     if(ret != 0)
         return -ENOMEM;
     p=buffer;
-    while(tmp>0){
-        if(tmp>4096){
-            spi_write_array_data(p,4096);
-            p=p+4096;
-            tmp=tmp-4096;
-        }
-        else{
-            spi_write_array_data(p,tmp);
-            break;
-        }
-    }
+    spi_write_array_data(p,tmp);
     return 0;
 }
 
 static long st7775r_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
+    int state;
     switch(cmd)
     {
         case ST7775R_IOC_WR_BUFFER_SIZE:
@@ -291,6 +309,18 @@ static long st7775r_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 		    }
             printk("1 args's %ld\n",*(unsigned long*)arg);
             break;
+        case ST7775R_IOC_WR_ENTER_STANDBY:
+            LCD_Enter_Standby();
+            break;
+        case ST7775R_IOC_WR_EXIT_STANDBY:
+            LCD_Exit_Standby();
+            break;
+
+        case ST7775R_IOC_BACKLIGHT_CONTROL:
+            state=*(unsigned long*)arg;
+            BACKLIGHT(state);
+            break;            
+            
         default:
             printk("cmd:%x,arg=%ld",cmd,*(unsigned long*)arg);        
     }
@@ -314,11 +344,14 @@ static int st7775r_spidev_probe(struct spi_device *spi_dev)
 	/* Initialize the driver data */
     printk("st7775r_spidev_probe\n");
 	spi = spi_dev;
-    inti_st7775r(); 
+    inti_st7775r();     
+    buffer = kmalloc(buffer_size, GFP_KERNEL);
+    if(buffer==NULL)
+        printk("kmalloc error\n");
     return 0;
 }
 
-static int st7775r_spidev_remove(struct spi_device *spi)
+static int st7775r_spidev_remove(struct spi_device *spi_dev)
 {
     spi = NULL;
 	return 0;
@@ -348,6 +381,11 @@ static int __init st7775r_init(void)
     ret = gpio_request(st7775r_board.rs_gpio,"st7775r_rs");       
     if(ret){                                                         
           printk("gpio requrest fail %d\n",st7775r_board.rs_gpio);
+    }                                                                 
+
+    ret = gpio_request(st7775r_board.backlight_gpio,"st7775r_backlight");       
+    if(ret){                                                         
+          printk("gpio requrest fail %d\n",st7775r_board.backlight_gpio);
     }                                                                 
     
     alloc_chrdev_region(&hell_devid, 0, 32768, "st7775r");
